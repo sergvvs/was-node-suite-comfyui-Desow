@@ -18,7 +18,33 @@ from timm.models.registry import register_model
 from timm.layers import trunc_normal_, DropPath
 from timm.models.helpers import named_apply, adapt_input_conv
 
-from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
+
+try:
+    from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper as fairscale_checkpoint_wrapper
+except ImportError:
+    fairscale_checkpoint_wrapper = None  # inline fallback marker when fairscale отсутствует
+
+
+class TorchCheckpointWrapper(nn.Module):
+    """Wraps modules with native torch checkpointing when fairscale отсутствует."""
+
+    def __init__(self, module: nn.Module):
+        super().__init__()
+        self.module = module  # сохраняем оригинальный модуль
+
+    def forward(self, *args, **kwargs):
+        def run_module(*inputs):
+            return self.module(*inputs, **kwargs)
+
+        return torch_checkpoint(run_module, *args)
+
+
+def wrap_with_checkpoint(module: nn.Module) -> nn.Module:
+    """Возвращает оптимальный чекпойнт-обёртку, сохраняя API."""
+    if fairscale_checkpoint_wrapper is not None:
+        return fairscale_checkpoint_wrapper(module)  # используем fairscale при наличии
+    return TorchCheckpointWrapper(module)  # иначе опираемся на torch checkpoint
 
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
@@ -101,8 +127,9 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
         if use_grad_checkpointing:
-            self.attn = checkpoint_wrapper(self.attn)
-            self.mlp = checkpoint_wrapper(self.mlp)
+            # оборачиваем блоки чекпойнтами, выбирая доступный бэкенд
+            self.attn = wrap_with_checkpoint(self.attn)
+            self.mlp = wrap_with_checkpoint(self.mlp)
 
     def forward(self, x, register_hook=False):
         x = x + self.drop_path(self.attn(self.norm1(x), register_hook=register_hook))

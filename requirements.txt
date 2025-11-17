@@ -1,5 +1,5 @@
 cmake
-fairscale>=0.4.4
+# fairscale>=0.4.4
 git+https://github.com/ltdrdata/img2texture.git
 git+https://github.com/ltdrdata/cstr
 gitpython
